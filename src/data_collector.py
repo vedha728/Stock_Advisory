@@ -704,8 +704,23 @@ def fetch_news_headlines(ticker: str, company_name: str) -> list[dict]:
     # 1. Primary: NewsAPI (only if key is present and not default placeholder)
     if news_api_key and "PLACEHOLDER" not in news_api_key:
         try:
-            print("[*] Fetching news from NewsAPI...")
-            query = f'"{company_name}" OR "{ticker.split(".")[0]}"'
+            ticker_base = ticker.split(".")[0]
+            ticker_clean = ticker_base.lower()
+            query_terms = {company_name, ticker_base}
+            
+            if ticker_clean == "bhartiartl":
+                query_terms.add("Airtel")
+            elif ticker_clean == "sbin":
+                query_terms.add("SBI")
+            elif ticker_clean == "hindunilvr":
+                query_terms.add("HUL")
+                
+            comp_words = company_name.split()
+            generic_words = {"limited", "ltd", "inc", "corp", "corporation", "industries", "bank", "motors", "group", "holdings", "finance", "services", "technologies", "tech"}
+            if len(comp_words) >= 2 and comp_words[-1].lower() not in generic_words and len(comp_words[-1]) >= 4:
+                query_terms.add(comp_words[-1])
+
+            query = " OR ".join([f'"{term}"' for term in query_terms])
             
             root_domains = (
                 "indiatimes.com,moneycontrol.com,livemint.com,thehindubusinessline.com,"
@@ -743,7 +758,6 @@ def fetch_news_headlines(ticker: str, company_name: str) -> list[dict]:
                 f"https://newsapi.org/v2/everything?"
                 f"qInTitle={quote_plus(query)}&"
                 f"domains={root_domains}&"
-                f"from={from_date_str}&"
                 f"language=en&"
                 f"sortBy=relevance&"
                 f"pageSize=50&"
@@ -783,63 +797,85 @@ def fetch_news_headlines(ticker: str, company_name: str) -> list[dict]:
                             })
                 print(f"[+] Retrieved {len(headlines)} headlines from NewsAPI.")
         except Exception as e:
-            print(f"[Warning] NewsAPI fetch failed: {e}. Falling back to Yahoo Finance RSS.")
+            print(f"[Warning] NewsAPI fetch failed: {e}. Falling back to Google News RSS.")
             
-    # 2. Supplement/Fallback: Yahoo Finance RSS (if NewsAPI returned fewer than 5 headlines)
+    # 2. Supplement/Fallback: Google News RSS (if NewsAPI returned fewer than 5 headlines)
     if len(headlines) < 5:
         try:
-            print(f"[*] Supplementing with Yahoo Finance RSS (currently have {len(headlines)} articles)...")
-            url = f"https://finance.yahoo.com/rss/headline?s={ticker}"
+            print(f"[*] Supplementing with Google News RSS (currently have {len(headlines)} articles)...")
+            ticker_clean = ticker.split(".")[0].lower()
+            comp_clean = company_name.lower()
+            
+            # Construct optimal search query for Google News India
+            rss_search = f'"{company_name}" OR "{ticker_clean.upper()}"'
+            if ticker_clean == "bhartiartl":
+                rss_search += ' OR "Airtel"'
+            elif ticker_clean == "sbin":
+                rss_search += ' OR "SBI"'
+            elif ticker_clean == "hindunilvr":
+                rss_search += ' OR "HUL"'
+
+            url = f"https://news.google.com/rss/search?q={quote_plus(rss_search)}+stock+news&hl=en-IN&gl=IN&ceid=IN:en"
             headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
             response = requests.get(url, headers=headers, timeout=5)
             
             if response.status_code == 200:
                 root = ET.fromstring(response.content)
-                ticker_clean = ticker.split(".")[0].lower()
-                comp_clean = company_name.lower()
-                
                 raw_rss_count = 0
                 added_rss_count = 0
                 for item in root.findall(".//item"):
                     title_elem = item.find("title")
                     link_elem = item.find("link")
-                    desc_elem = item.find("description")
+                    source_elem = item.find("source")
                     
                     if title_elem is not None and title_elem.text:
                         raw_rss_count += 1
                         title_text = title_elem.text
                         title_lower = title_text.lower()
                         
+                        source_name = "Google News"
+                        if source_elem is not None and source_elem.text:
+                            source_name = source_elem.text
+                        elif " - " in title_text:
+                            parts = title_text.rsplit(" - ", 1)
+                            title_text = parts[0].strip()
+                            source_name = parts[1].strip()
+                            
                         # Enforce matching using common stock aliases and abbreviations
                         aliases = {comp_clean, ticker_clean}
                         if ticker_clean == "sbin":
                             aliases.add("sbi")
+                        elif ticker_clean == "bhartiartl":
+                            aliases.add("airtel")
+                            aliases.add("bharti")
                         elif ticker_clean.endswith("bank"):
                             aliases.add(ticker_clean.replace("bank", ""))
                         if "bank" in comp_clean:
                             words = comp_clean.split()
                             if len(words) >= 2:
                                 aliases.add(" ".join(words[:2]))
+                        
+                        comp_words = comp_clean.split()
+                        generic_words = {"limited", "ltd", "inc", "corp", "corporation", "industries", "bank", "motors", "group", "holdings", "finance", "services", "technologies", "tech"}
+                        if len(comp_words) >= 2 and comp_words[-1] not in generic_words and len(comp_words[-1]) >= 4:
+                            aliases.add(comp_words[-1])
                                 
                         has_match = any((a in title_lower) for a in aliases)
                         if has_match:
                             norm = normalize_title(title_text)
                             if norm not in seen_titles:
                                 url_text = link_elem.text if link_elem is not None else ""
-                                desc_text = desc_elem.text if desc_elem is not None else ""
-                                desc_clean = clean_and_truncate_description(desc_text)
-                                    
                                 seen_titles.add(norm)
                                 headlines.append({
                                     "title": title_text,
                                     "url": url_text,
-                                    "source": "Yahoo Finance",
-                                    "description": desc_clean
+                                    "source": source_name,
+                                    "description": f"Recent financial news headline from {source_name}"
                                 })
                                 added_rss_count += 1
-                print(f"[+] Retrieved {raw_rss_count} raw RSS headlines, added {added_rss_count} unique matching articles.")
+                print(f"[+] Google News RSS: retrieved {raw_rss_count} raw RSS headlines, added {added_rss_count} unique matching articles.")
         except Exception as e:
-            print(f"[Error] Failed to fetch news from RSS: {e}")
+            print(f"[Error] Failed to fetch news from Google News RSS: {e}")
             
     return headlines[:15]
 
